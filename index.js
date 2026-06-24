@@ -1,20 +1,28 @@
 const express = require('express');
 const cors = require('cors');
-const app = express()
-const port = 5000
-const { MongoClient, ServerApiVersion } = require('mongodb');
+const cookieParser = require("cookie-parser");
+const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 require('dotenv').config();
 
+const verifyToken = require("./middleware/verifyToken");
+const verifyRole = require("./middleware/verifyRole");
+
+const app = express();
+const port = 5000;
+
 app.use(express.json());
-app.use(cors());
+app.use(cors({
+  origin: process.env.FRONTEND_URL || "http://localhost:3000",
+  credentials: true,
+}));
+app.use(cookieParser());
 
 app.get('/', (req, res) => {
   res.send('Hello World!')
-})
+});
 
 const uri = process.env.MONGODB_URL;
 
-// Create a MongoClient with a MongoClientOptions object to set the Stable API version
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
@@ -29,6 +37,11 @@ async function run() {
 
     const database = client.db("medicare_connect");
     const doctorsCollection = database.collection("doctor");
+    const appointmentsCollection = database.collection("appointments");
+    const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+
+    // ─── DOCTORS ────────────────────────────────────────────
 
     app.get("/api/doctors", async (req, res) => {
       try {
@@ -80,6 +93,22 @@ async function run() {
       }
     });
 
+    app.get("/api/doctors/:id", async (req, res) => {
+      try {
+        const id = req.params.id;
+        const doctor = await doctorsCollection.findOne({ _id: new ObjectId(id) });
+
+        if (!doctor) {
+          return res.status(404).send({ message: "Doctor not found" });
+        }
+
+        res.send(doctor);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to fetch doctor" });
+      }
+    });
+
     app.post("/api/doctors", async (req, res) => {
       try {
         const doctorData = req.body;
@@ -96,10 +125,230 @@ async function run() {
       }
     });
 
+    // ─── APPOINTMENTS ────────────────────────────────────────
+
+    app.post("/api/appointments", verifyToken, async (req, res) => {
+      try {
+        const appointmentData = req.body;
+
+        if (
+          !appointmentData.patientId ||
+          !appointmentData.doctorId ||
+          !appointmentData.appointmentDate ||
+          !appointmentData.appointmentTime
+        ) {
+          return res.status(400).send({ message: "Required fields missing" });
+        }
+
+        const existing = await appointmentsCollection.findOne({
+          doctorId: appointmentData.doctorId,
+          appointmentDate: appointmentData.appointmentDate,
+          appointmentTime: appointmentData.appointmentTime,
+          appointmentStatus: { $ne: "cancelled" },
+        });
+
+        if (existing) {
+          return res.status(409).send({ message: "This time slot is already booked." });
+        }
+
+        const newAppointment = {
+          ...appointmentData,
+          appointmentStatus: "pending",
+          paymentStatus: "unpaid",
+          createdAt: new Date(),
+        };
+
+        const result = await appointmentsCollection.insertOne(newAppointment);
+        res.status(201).send(result);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to book appointment" });
+      }
+    });
+
+    app.get("/api/appointments/patient/:patientId", verifyToken, async (req, res) => {
+      try {
+        const { patientId } = req.params;
+
+        const appointments = await appointmentsCollection
+          .aggregate([
+            { $match: { patientId } },
+            {
+              $addFields: {
+                doctorObjId: { $toObjectId: "$doctorId" },
+              },
+            },
+            {
+              $lookup: {
+                from: "doctor",
+                localField: "doctorObjId",
+                foreignField: "_id",
+                as: "doctorInfo",
+              },
+            },
+            { $unwind: { path: "$doctorInfo", preserveNullAndEmptyArrays: true } },
+            { $sort: { appointmentDate: 1, appointmentTime: 1 } },
+          ])
+          .toArray();
+
+        res.send(appointments);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to fetch patient appointments" });
+      }
+    });
+
+
+    // Payment intent create
+    app.post("/api/payments/create-intent", verifyToken, async (req, res) => {
+      try {
+        const { appointmentId, amount } = req.body;
+
+        if (!appointmentId || !amount) {
+          return res.status(400).send({ message: "appointmentId and amount required" });
+        }
+
+        const paymentIntent = await stripe.paymentIntents.create({
+          amount: Math.round(amount * 100), // cent e convert (50$ = 5000 cents)
+          currency: "usd",
+          metadata: { appointmentId },
+        });
+
+        res.send({ clientSecret: paymentIntent.client_secret });
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to create payment intent" });
+      }
+    });
+
+    // Payment success hole appointment update
+    app.patch("/api/appointments/:id/payment", verifyToken, async (req, res) => {
+      try {
+        const { transactionId } = req.body;
+        const appointmentId = req.params.id;
+
+        const result = await appointmentsCollection.updateOne(
+          { _id: new ObjectId(appointmentId) },
+          {
+            $set: {
+              paymentStatus: "paid",
+              appointmentStatus: "confirmed",
+              transactionId,
+              paidAt: new Date(),
+            },
+          }
+        );
+
+        res.send(result);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to update payment" });
+      }
+    });
+
+    app.get("/api/appointments/:id", verifyToken, async (req, res) => {
+      try {
+        const appointment = await appointmentsCollection
+          .aggregate([
+            { $match: { _id: new ObjectId(req.params.id) } },
+            {
+              $addFields: { doctorObjId: { $toObjectId: "$doctorId" } },
+            },
+            {
+              $lookup: {
+                from: "doctor",
+                localField: "doctorObjId",
+                foreignField: "_id",
+                as: "doctorInfo",
+              },
+            },
+            { $unwind: { path: "$doctorInfo", preserveNullAndEmptyArrays: true } },
+          ])
+          .toArray();
+
+        if (!appointment[0]) {
+          return res.status(404).send({ message: "Appointment not found" });
+        }
+
+        res.send(appointment[0]);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to fetch appointment" });
+      }
+    });
+
+    // ─── ADMIN ROUTES ────────────────────────────────────────
+
+    app.delete("/api/users/:id", verifyToken, verifyRole("admin"), async (req, res) => {
+      try {
+        const usersCollection = database.collection("user");
+        const result = await usersCollection.deleteOne({ _id: new ObjectId(req.params.id) });
+        res.send(result);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to delete user" });
+      }
+    });
+
+    app.patch("/api/doctors/:id/verify", verifyToken, verifyRole("admin"), async (req, res) => {
+      try {
+        const { status } = req.body;
+        const result = await doctorsCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: { verificationStatus: status } }
+        );
+        res.send(result);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to update doctor status" });
+      }
+    });
+
+    app.get("/api/payments/patient/:patientId", verifyToken, async (req, res) => {
+      try {
+        const { patientId } = req.params;
+
+        const payments = await appointmentsCollection
+          .aggregate([
+            {
+              $match: {
+                patientId,
+                paymentStatus: "paid",
+              },
+            },
+            {
+              $addFields: {
+                doctorObjId: { $toObjectId: "$doctorId" },
+              },
+            },
+            {
+              $lookup: {
+                from: "doctor",
+                localField: "doctorObjId",
+                foreignField: "_id",
+                as: "doctorInfo",
+              },
+            },
+            {
+              $unwind: {
+                path: "$doctorInfo",
+                preserveNullAndEmptyArrays: true,
+              },
+            },
+            { $sort: { paidAt: -1 } },
+          ])
+          .toArray();
+
+        res.send(payments);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to fetch payment history" });
+      }
+    });
+
     await client.db("admin").command({ ping: 1 });
-    console.log(
-      "Pinged your deployment. You successfully connected to MongoDB!"
-    );
+    console.log("Pinged your deployment. You successfully connected to MongoDB!");
+
   } catch (error) {
     console.error(error);
   }
@@ -107,8 +356,6 @@ async function run() {
 
 run().catch(console.dir);
 
-
-
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`)
-})
+});
