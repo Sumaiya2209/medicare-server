@@ -86,7 +86,6 @@ async function run() {
         res.status(500).send({ message: "Failed" });
       }
     });
-
     // Patient testimonials (reviews with patient info)
     app.get("/api/home/testimonials", async (req, res) => {
       try {
@@ -129,6 +128,7 @@ async function run() {
         res.status(500).send({ message: "Failed" });
       }
     });
+
     // ─── DOCTORS ────────────────────────────────────────────
 
     app.get("/api/doctors", async (req, res) => {
@@ -362,6 +362,45 @@ async function run() {
       } catch (err) {
         console.error(err);
         res.status(500).send({ message: "Failed to fetch appointment" });
+      }
+    });
+
+    // Cancel appointment
+    app.patch("/api/appointments/:id/cancel", verifyToken, async (req, res) => {
+      try {
+        const result = await appointmentsCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: { appointmentStatus: "cancelled", updatedAt: new Date() } }
+        );
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to cancel appointment" });
+      }
+    });
+
+    // Reschedule appointment
+    app.patch("/api/appointments/:id/reschedule", verifyToken, async (req, res) => {
+      try {
+        const { appointmentDate, appointmentTime } = req.body;
+
+        if (!appointmentDate || !appointmentTime) {
+          return res.status(400).send({ message: "Date and time required" });
+        }
+
+        const result = await appointmentsCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          {
+            $set: {
+              appointmentDate,
+              appointmentTime,
+              appointmentStatus: "pending",
+              updatedAt: new Date(),
+            },
+          }
+        );
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to reschedule" });
       }
     });
 
