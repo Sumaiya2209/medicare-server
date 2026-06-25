@@ -41,8 +41,53 @@ async function run() {
     const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
     const usersCollection = database.collection("user");
 
+    const ADMIN_EMAIL = "jannatsumaiya199@gmail.com";
+
+    const existingAdmin = await usersCollection.findOne({ email: ADMIN_EMAIL });
+    if (existingAdmin && existingAdmin.role !== "admin") {
+      await usersCollection.updateOne(
+        { email: ADMIN_EMAIL },
+        { $set: { role: "admin" } }
+      );
+      console.log(`✅ Admin role set for ${ADMIN_EMAIL}`);
+    } else if (existingAdmin) {
+      console.log(`✅ Admin already set: ${ADMIN_EMAIL}`);
+    } else {
+      console.log(`⚠️ Admin email not found in DB: ${ADMIN_EMAIL}`);
+    }
 
 
+    // Featured doctors (verified only, limit 6)
+    app.get("/api/home/featured-doctors", async (req, res) => {
+      try {
+        const doctors = await doctorsCollection
+          .find({ verificationStatus: "verified" })
+          .limit(6)
+          .toArray();
+        res.send(doctors);
+      } catch (err) {
+        res.status(500).send({ message: "Failed" });
+      }
+    });
+
+    // Platform statistics
+    app.get("/api/home/stats", async (req, res) => {
+      try {
+        const usersCollection = database.collection("user");
+        const reviewsCollection = database.collection("reviews");
+
+        const totalDoctors = await doctorsCollection.countDocuments({ verificationStatus: "verified" });
+        const totalPatients = await usersCollection.countDocuments({ role: "patient" });
+        const totalAppointments = await appointmentsCollection.countDocuments();
+        const totalReviews = await reviewsCollection.countDocuments();
+
+        res.send({ totalDoctors, totalPatients, totalAppointments, totalReviews });
+      } catch (err) {
+        res.status(500).send({ message: "Failed" });
+      }
+    });
+
+    
     // ─── DOCTORS ────────────────────────────────────────────
 
     app.get("/api/doctors", async (req, res) => {
