@@ -346,6 +346,84 @@ async function run() {
       }
     });
 
+
+    // Doctor er shob appointments (pending/confirmed/etc)
+    app.get("/api/appointments/doctor/:doctorId", verifyToken, async (req, res) => {
+      try {
+        const { doctorId } = req.params;
+
+        const appointments = await appointmentsCollection
+          .aggregate([
+            { $match: { doctorId } },
+            {
+              $addFields: {
+                patientObjId: { $toObjectId: "$patientId" },
+              },
+            },
+            {
+              $lookup: {
+                from: "user",
+                localField: "patientObjId",
+                foreignField: "_id",
+                as: "patientInfo",
+              },
+            },
+            {
+              $unwind: {
+                path: "$patientInfo",
+                preserveNullAndEmptyArrays: true,
+              },
+            },
+            { $sort: { appointmentDate: 1, appointmentTime: 1 } },
+          ])
+          .toArray();
+
+        res.send(appointments);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to fetch doctor appointments" });
+      }
+    });
+
+    // Appointment status update (accept/reject/complete)
+    app.patch("/api/appointments/:id/status", verifyToken, async (req, res) => {
+      try {
+        const { status } = req.body;
+        const validStatuses = ["confirmed", "cancelled", "completed", "pending"];
+
+        if (!validStatuses.includes(status)) {
+          return res.status(400).send({ message: "Invalid status" });
+        }
+
+        const result = await appointmentsCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: { appointmentStatus: status, updatedAt: new Date() } }
+        );
+
+        res.send(result);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to update appointment status" });
+      }
+    });
+
+    app.get("/api/doctors/user/:userId", verifyToken, async (req, res) => {
+  try {
+    const doctor = await doctorsCollection.findOne({
+      userId: req.params.userId,
+    });
+
+    if (!doctor) {
+      return res.status(404).send({ message: "Doctor profile not found" });
+    }
+
+    res.send(doctor);
+  } catch (err) {
+    console.error(err);
+    res.status(500).send({ message: "Failed to fetch doctor" });
+  }
+});
+
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
