@@ -39,6 +39,8 @@ async function run() {
     const doctorsCollection = database.collection("doctor");
     const appointmentsCollection = database.collection("appointments");
     const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+    const usersCollection = database.collection("user");
+
 
 
     // ─── DOCTORS ────────────────────────────────────────────
@@ -408,21 +410,168 @@ async function run() {
     });
 
     app.get("/api/doctors/user/:userId", verifyToken, async (req, res) => {
-  try {
-    const doctor = await doctorsCollection.findOne({
-      userId: req.params.userId,
+      try {
+        const doctor = await doctorsCollection.findOne({
+          userId: req.params.userId,
+        });
+
+        if (!doctor) {
+          return res.status(404).send({ message: "Doctor profile not found" });
+        }
+
+        res.send(doctor);
+      } catch (err) {
+        console.error(err);
+        res.status(500).send({ message: "Failed to fetch doctor" });
+      }
     });
 
-    if (!doctor) {
-      return res.status(404).send({ message: "Doctor profile not found" });
-    }
 
-    res.send(doctor);
-  } catch (err) {
-    console.error(err);
-    res.status(500).send({ message: "Failed to fetch doctor" });
-  }
-});
+    // ─── ADMIN: USERS ────────────────────────────────────────
+
+    // All users fetch
+    app.get("/api/admin/users", verifyToken, verifyRole("admin"), async (req, res) => {
+      try {
+        const users = await usersCollection.find({}).toArray();
+        res.send(users);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to fetch users" });
+      }
+    });
+
+    // Delete user
+    app.delete("/api/admin/users/:id", verifyToken, verifyRole("admin"), async (req, res) => {
+      try {
+        const result = await usersCollection.deleteOne({
+          _id: new ObjectId(req.params.id),
+        });
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to delete user" });
+      }
+    });
+
+    // Suspend/activate user
+    app.patch("/api/admin/users/:id/status", verifyToken, verifyRole("admin"), async (req, res) => {
+      try {
+        const { status } = req.body;
+        const result = await usersCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: { status } }
+        );
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to update user status" });
+      }
+    });
+
+    // ─── ADMIN: DOCTORS ──────────────────────────────────────
+
+    // All doctors
+    app.get("/api/admin/doctors", verifyToken, verifyRole("admin"), async (req, res) => {
+      try {
+        const doctors = await doctorsCollection.find({}).toArray();
+        res.send(doctors);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to fetch doctors" });
+      }
+    });
+
+    // Verify/reject doctor
+    app.patch("/api/admin/doctors/:id/verify", verifyToken, verifyRole("admin"), async (req, res) => {
+      try {
+        const { verificationStatus } = req.body;
+        const result = await doctorsCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          { $set: { verificationStatus } }
+        );
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to update doctor status" });
+      }
+    });
+
+    // ─── ADMIN: ANALYTICS ────────────────────────────────────
+
+    app.get("/api/admin/analytics", verifyToken, verifyRole("admin"), async (req, res) => {
+      try {
+        const totalDoctors = await doctorsCollection.countDocuments();
+        const totalPatients = await usersCollection.countDocuments({ role: "patient" });
+        const totalAppointments = await appointmentsCollection.countDocuments();
+        const totalPaid = await appointmentsCollection.countDocuments({ paymentStatus: "paid" });
+
+        // Doctor performance (rating based)
+        const doctorPerformance = await doctorsCollection
+          .find({}, { projection: { doctorName: 1, rating: 1, specialization: 1 } })
+          .sort({ rating: -1 })
+          .limit(5)
+          .toArray();
+
+        // Monthly appointments
+        const monthlyData = await appointmentsCollection
+          .aggregate([
+            {
+              $group: {
+                _id: { $substr: ["$appointmentDate", 0, 7] },
+                count: { $sum: 1 },
+              },
+            },
+            { $sort: { _id: 1 } },
+            { $limit: 6 },
+          ])
+          .toArray();
+
+        res.send({
+          totalDoctors,
+          totalPatients,
+          totalAppointments,
+          totalPaid,
+          doctorPerformance,
+          monthlyData,
+        });
+      } catch (err) {
+        res.status(500).send({ message: "Failed to fetch analytics" });
+      }
+    });
+
+    // All appointments (admin)
+    app.get("/api/admin/appointments", verifyToken, verifyRole("admin"), async (req, res) => {
+      try {
+        const appointments = await appointmentsCollection
+          .aggregate([
+            {
+              $addFields: {
+                doctorObjId: { $toObjectId: "$doctorId" },
+                patientObjId: { $toObjectId: "$patientId" },
+              },
+            },
+            {
+              $lookup: {
+                from: "doctor",
+                localField: "doctorObjId",
+                foreignField: "_id",
+                as: "doctorInfo",
+              },
+            },
+            {
+              $lookup: {
+                from: "user",
+                localField: "patientObjId",
+                foreignField: "_id",
+                as: "patientInfo",
+              },
+            },
+            { $unwind: { path: "$doctorInfo", preserveNullAndEmptyArrays: true } },
+            { $unwind: { path: "$patientInfo", preserveNullAndEmptyArrays: true } },
+            { $sort: { createdAt: -1 } },
+          ])
+          .toArray();
+
+        res.send(appointments);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to fetch appointments" });
+      }
+    });
 
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
