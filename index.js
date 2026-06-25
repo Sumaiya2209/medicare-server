@@ -87,7 +87,48 @@ async function run() {
       }
     });
 
-    
+    // Patient testimonials (reviews with patient info)
+    app.get("/api/home/testimonials", async (req, res) => {
+      try {
+        const reviewsCollection = database.collection("reviews");
+        const usersCollection = database.collection("user");
+
+        const reviews = await reviewsCollection
+          .aggregate([
+            {
+              $addFields: {
+                patientObjId: { $toObjectId: "$patientId" },
+                doctorObjId: { $toObjectId: "$doctorId" },
+              },
+            },
+            {
+              $lookup: {
+                from: "user",
+                localField: "patientObjId",
+                foreignField: "_id",
+                as: "patientInfo",
+              },
+            },
+            {
+              $lookup: {
+                from: "doctor",
+                localField: "doctorObjId",
+                foreignField: "_id",
+                as: "doctorInfo",
+              },
+            },
+            { $unwind: { path: "$patientInfo", preserveNullAndEmptyArrays: true } },
+            { $unwind: { path: "$doctorInfo", preserveNullAndEmptyArrays: true } },
+            { $sort: { createdAt: -1 } },
+            { $limit: 6 },
+          ])
+          .toArray();
+
+        res.send(reviews);
+      } catch (err) {
+        res.status(500).send({ message: "Failed" });
+      }
+    });
     // ─── DOCTORS ────────────────────────────────────────────
 
     app.get("/api/doctors", async (req, res) => {
