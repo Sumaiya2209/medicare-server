@@ -40,6 +40,7 @@ async function run() {
     const appointmentsCollection = database.collection("appointments");
     const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
     const usersCollection = database.collection("user");
+    const reviewsCollection = database.collection("reviews");
 
     const ADMIN_EMAIL = "jannatsumaiya199@gmail.com";
 
@@ -695,6 +696,96 @@ async function run() {
         res.send(appointments);
       } catch (err) {
         res.status(500).send({ message: "Failed to fetch appointments" });
+      }
+    });
+
+
+    // Get patient reviews
+    app.get("/api/reviews/patient/:patientId", verifyToken, async (req, res) => {
+      try {
+        const reviews = await reviewsCollection
+          .aggregate([
+            { $match: { patientId: req.params.patientId } },
+            {
+              $addFields: { doctorObjId: { $toObjectId: "$doctorId" } },
+            },
+            {
+              $lookup: {
+                from: "doctor",
+                localField: "doctorObjId",
+                foreignField: "_id",
+                as: "doctorInfo",
+              },
+            },
+            { $unwind: { path: "$doctorInfo", preserveNullAndEmptyArrays: true } },
+            { $sort: { createdAt: -1 } },
+          ])
+          .toArray();
+
+        res.send(reviews);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to fetch reviews" });
+      }
+    });
+
+    // Add review
+    app.post("/api/reviews", verifyToken, async (req, res) => {
+      try {
+        const { patientId, doctorId, rating, reviewText } = req.body;
+
+        if (!patientId || !doctorId || !rating || !reviewText) {
+          return res.status(400).send({ message: "All fields required" });
+        }
+
+        // Ek doctor ke ekbar er beshi review dewa jacche kina check
+        const existing = await reviewsCollection.findOne({ patientId, doctorId });
+        if (existing) {
+          return res.status(409).send({ message: "You already reviewed this doctor" });
+        }
+
+        const result = await reviewsCollection.insertOne({
+          patientId,
+          doctorId,
+          rating: Number(rating),
+          reviewText,
+          createdAt: new Date(),
+        });
+
+        res.status(201).send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to add review" });
+      }
+    });
+
+    // Update review
+    app.patch("/api/reviews/:id", verifyToken, async (req, res) => {
+      try {
+        const { rating, reviewText } = req.body;
+        const result = await reviewsCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          {
+            $set: {
+              rating: Number(rating),
+              reviewText,
+              updatedAt: new Date(),
+            },
+          }
+        );
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to update review" });
+      }
+    });
+
+    // Delete review
+    app.delete("/api/reviews/:id", verifyToken, async (req, res) => {
+      try {
+        const result = await reviewsCollection.deleteOne({
+          _id: new ObjectId(req.params.id),
+        });
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to delete review" });
       }
     });
 
