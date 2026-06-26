@@ -789,6 +789,36 @@ async function run() {
       }
     });
 
+    // Get doctor profile by userId
+    // Already ache: GET /api/doctors/user/:userId
+
+    // Update doctor profile
+    app.patch("/api/doctors/user/:userId", verifyToken, async (req, res) => {
+      try {
+        const { qualifications, experience, consultationFee, availableSlots, availableDays, hospitalName, specialization } = req.body;
+
+        const result = await doctorsCollection.updateOne(
+          { userId: req.params.userId },
+          {
+            $set: {
+              qualifications,
+              experience: Number(experience),
+              consultationFee: Number(consultationFee),
+              availableSlots,
+              availableDays,
+              hospitalName,
+              specialization,
+              updatedAt: new Date(),
+            },
+          }
+        );
+
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to update profile" });
+      }
+    });
+
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
