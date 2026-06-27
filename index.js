@@ -819,6 +819,31 @@ async function run() {
       }
     });
 
+    // Specific date e doctor er booked slots fetch koro
+    app.get("/api/appointments/booked-slots", async (req, res) => {
+      try {
+        const { doctorId, date } = req.query;
+
+        if (!doctorId || !date) {
+          return res.status(400).send({ message: "doctorId and date required" });
+        }
+
+        const bookedAppointments = await appointmentsCollection
+          .find({
+            doctorId,
+            appointmentDate: date,
+            appointmentStatus: { $ne: "cancelled" },
+          })
+          .project({ appointmentTime: 1 })
+          .toArray();
+
+        const bookedSlots = bookedAppointments.map((a) => a.appointmentTime);
+        res.send(bookedSlots);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to fetch booked slots" });
+      }
+    });
+
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
