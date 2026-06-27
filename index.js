@@ -844,6 +844,42 @@ async function run() {
       }
     });
 
+    // Get doctor schedule
+    app.get("/api/doctors/user/:userId/schedule", verifyToken, async (req, res) => {
+      try {
+        const doctor = await doctorsCollection.findOne({ userId: req.params.userId });
+        if (!doctor) return res.status(404).send({ message: "Doctor not found" });
+
+        res.send({
+          availableDays: doctor.availableDays || [],
+          availableSlots: doctor.availableSlots || [],
+        });
+      } catch (err) {
+        res.status(500).send({ message: "Failed to fetch schedule" });
+      }
+    });
+
+    // Update schedule (days + slots)
+    app.patch("/api/doctors/user/:userId/schedule", verifyToken, async (req, res) => {
+      try {
+        const { availableDays, availableSlots } = req.body;
+
+        const result = await doctorsCollection.updateOne(
+          { userId: req.params.userId },
+          {
+            $set: {
+              availableDays,
+              availableSlots,
+              updatedAt: new Date(),
+            },
+          }
+        );
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to update schedule" });
+      }
+    });
+
     await client.db("admin").command({ ping: 1 });
     console.log("Pinged your deployment. You successfully connected to MongoDB!");
 
