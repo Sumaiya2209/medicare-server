@@ -41,6 +41,7 @@ async function run() {
     const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
     const usersCollection = database.collection("user");
     const reviewsCollection = database.collection("reviews");
+    const prescriptionsCollection = database.collection("prescriptions");
 
     const ADMIN_EMAIL = "jannatsumaiya199@gmail.com";
 
@@ -877,6 +878,106 @@ async function run() {
         res.send(result);
       } catch (err) {
         res.status(500).send({ message: "Failed to update schedule" });
+      }
+    });
+
+
+    // Get prescriptions by doctor
+    app.get("/api/prescriptions/doctor/:doctorId", verifyToken, async (req, res) => {
+      try {
+        const prescriptions = await prescriptionsCollection
+          .aggregate([
+            { $match: { doctorId: req.params.doctorId } },
+            {
+              $addFields: {
+                patientObjId: { $toObjectId: "$patientId" },
+                appointmentObjId: { $toObjectId: "$appointmentId" },
+              },
+            },
+            {
+              $lookup: {
+                from: "user",
+                localField: "patientObjId",
+                foreignField: "_id",
+                as: "patientInfo",
+              },
+            },
+            {
+              $lookup: {
+                from: "appointments",
+                localField: "appointmentObjId",
+                foreignField: "_id",
+                as: "appointmentInfo",
+              },
+            },
+            { $unwind: { path: "$patientInfo", preserveNullAndEmptyArrays: true } },
+            { $unwind: { path: "$appointmentInfo", preserveNullAndEmptyArrays: true } },
+            { $sort: { createdAt: -1 } },
+          ])
+          .toArray();
+
+        res.send(prescriptions);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to fetch prescriptions" });
+      }
+    });
+
+    // Create prescription
+    app.post("/api/prescriptions", verifyToken, async (req, res) => {
+      try {
+        const { doctorId, patientId, appointmentId, diagnosis, medications, notes } = req.body;
+
+        if (!doctorId || !patientId || !appointmentId || !diagnosis) {
+          return res.status(400).send({ message: "Required fields missing" });
+        }
+
+        const result = await prescriptionsCollection.insertOne({
+          doctorId,
+          patientId,
+          appointmentId,
+          diagnosis,
+          medications,
+          notes,
+          createdAt: new Date(),
+        });
+
+        res.status(201).send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to create prescription" });
+      }
+    });
+
+    // Update prescription
+    app.patch("/api/prescriptions/:id", verifyToken, async (req, res) => {
+      try {
+        const { diagnosis, medications, notes } = req.body;
+
+        const result = await prescriptionsCollection.updateOne(
+          { _id: new ObjectId(req.params.id) },
+          {
+            $set: {
+              diagnosis,
+              medications,
+              notes,
+              updatedAt: new Date(),
+            },
+          }
+        );
+        res.send(result);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to update prescription" });
+      }
+    });
+
+    // Get single prescription by appointmentId
+    app.get("/api/prescriptions/appointment/:appointmentId", verifyToken, async (req, res) => {
+      try {
+        const prescription = await prescriptionsCollection.findOne({
+          appointmentId: req.params.appointmentId,
+        });
+        res.send(prescription || null);
+      } catch (err) {
+        res.status(500).send({ message: "Failed to fetch prescription" });
       }
     });
 
