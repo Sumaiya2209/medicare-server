@@ -11,8 +11,17 @@ const app = express();
 const port = 5000;
 
 app.use(express.json());
+const allowedOrigins = [
+  "http://localhost:3000",
+  ...(process.env.FRONTEND_URL ? process.env.FRONTEND_URL.split(",").map((origin) => origin.trim()).filter(Boolean) : []),
+];
 app.use(cors({
-  origin: process.env.FRONTEND_URL || "http://localhost:3000",
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`CORS policy blocked origin: ${origin}`));
+  },
   credentials: true,
 }));
 app.use(cookieParser());
@@ -21,28 +30,8 @@ app.get('/', (req, res) => {
   res.send('Hello World!')
 });
 
-const uri = process.env.MONGODB_URL;
-
-const client = new MongoClient(uri, {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  }
-});
-
-
-client.connect(() => {
-  console.log('Connecting to Mongodb');
-}).catch(console.dir);
-
-const database = client.db("medicare_connect");
-const doctorsCollection = database.collection("doctor");
-const appointmentsCollection = database.collection("appointments");
-const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
-const usersCollection = database.collection("user");
-const reviewsCollection = database.collection("reviews");
-const prescriptionsCollection = database.collection("prescriptions");
+const connectDB = require("./db/connect");
+let doctorsCollection, appointmentsCollection, usersCollection, reviewsCollection, prescriptionsCollection, stripe;
 
 const ADMIN_EMAIL = "jannatsumaiya199@gmail.com";
 
@@ -81,17 +70,16 @@ app.get("/api/home/featured-doctors", async (req, res) => {
 // Platform statistics
 app.get("/api/home/stats", async (req, res) => {
   try {
-    const usersCollection = database.collection("user");
-    const reviewsCollection = database.collection("reviews");
+    // Ensure collections are available
+    const totalDoctors = (await doctorsCollection?.countDocuments?.({ verificationStatus: "verified" })) || 0;
+    const totalPatients = (await usersCollection?.countDocuments?.({ role: "patient" })) || 0;
+    const totalAppointments = (await appointmentsCollection?.countDocuments?.()) || 0;
+    const totalReviews = (await reviewsCollection?.countDocuments?.()) || 0;
 
-    const totalDoctors = await doctorsCollection.countDocuments({ verificationStatus: "verified" });
-    const totalPatients = await usersCollection.countDocuments({ role: "patient" });
-    const totalAppointments = await appointmentsCollection.countDocuments();
-    const totalReviews = await reviewsCollection.countDocuments();
-
-    res.send({ totalDoctors, totalPatients, totalAppointments, totalReviews });
+    res.send({ doctors: totalDoctors, patients: totalPatients, appointments: totalAppointments, reviews: totalReviews });
   } catch (err) {
-    res.status(500).send({ message: "Failed" });
+    console.error("/api/home/stats error:", err);
+    res.status(200).send({ doctors: 0, patients: 0, appointments: 0, reviews: 0 });
   }
 });
 // Patient testimonials (reviews with patient info)
@@ -988,8 +976,26 @@ app.get("/api/prescriptions/appointment/:appointmentId", verifyToken, async (req
 });
 
 
-app.listen(port, () => {
-  console.log(`Example app listening on port ${port}`)
-});
+// Initialize DB and start server
+connectDB()
+  .then(({ db }) => {
+    doctorsCollection = db.collection("doctor");
+    appointmentsCollection = db.collection("appointments");
+    usersCollection = db.collection("user");
+    reviewsCollection = db.collection("reviews");
+    prescriptionsCollection = db.collection("prescriptions");
+    stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+
+    // Create admin if needed (call asynchronously)
+    createAdmin().catch((err) => console.error("createAdmin error:", err));
+
+    app.listen(port, () => {
+      console.log(`Example app listening on port ${port}`);
+    });
+  })
+  .catch((err) => {
+    console.error("Failed to connect to database:", err);
+    process.exit(1);
+  });
 
 module.exports = app;
