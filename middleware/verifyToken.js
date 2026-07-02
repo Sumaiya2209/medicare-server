@@ -12,14 +12,20 @@ const verifyToken = async (req, res, next) => {
       });
     }
 
-    const betterAuthUrl = process.env.BETTER_AUTH_URL;
-    console.log("[verifyToken] BETTER_AUTH_URL:", betterAuthUrl || "NOT SET");
-    if (!betterAuthUrl) {
-      console.error("[verifyToken] BETTER_AUTH_URL not configured");
-      return res.status(500).json({ message: "Server configuration error" });
-    }
+    // Resolve Better Auth URL dynamically from header (case-insensitive), or fallback to environment variables
+    const headerFrontendUrl =
+      req.headers["x-frontend-url"] ||
+      req.headers["X-Frontend-Url"] ||
+      req.headers["x-frontend-url".toLowerCase()];
+    const betterAuthUrl =
+      headerFrontendUrl ||
+      process.env.BETTER_AUTH_URL ||
+      process.env.FRONTEND_URL ||
+      "http://localhost:3000";
+    console.log("[verifyToken] BETTER_AUTH_URL used:", betterAuthUrl);
+    console.log("[verifyToken] x-frontend-url header received:", headerFrontendUrl || "<none>");
 
-    const response = await fetch(`${betterAuthUrl}/api/auth/get-session`, {
+    const response = await fetch(`${betterAuthUrl.replace(/\/$/, "")}/api/auth/get-session`, {
       headers: {
         cookie: incomingCookie,
       },

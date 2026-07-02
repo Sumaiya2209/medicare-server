@@ -27,21 +27,54 @@ app.use(cors({
 app.use(cookieParser());
 
 app.get('/', (req, res) => {
-  res.send('Hello World!')
+  res.send('Hello World - Updated at ' + new Date().toISOString())
 });
 
 const connectDB = require("./db/connect");
-let doctorsCollection, appointmentsCollection, usersCollection, reviewsCollection, prescriptionsCollection, stripe;
+let _db = null;
+let stripe = null;
+
+async function getDb() {
+  if (_db) return _db;
+  const { db } = await connectDB();
+  _db = db;
+  return db;
+}
+
+async function doctorsCollection() {
+  const db = await getDb();
+  return db.collection("doctor");
+}
+async function appointmentsCollection() {
+  const db = await getDb();
+  return db.collection("appointments");
+}
+async function usersCollection() {
+  const db = await getDb();
+  return db.collection("user");
+}
+async function reviewsCollection() {
+  const db = await getDb();
+  return db.collection("reviews");
+}
+async function prescriptionsCollection() {
+  const db = await getDb();
+  return db.collection("prescriptions");
+}
+function getStripe() {
+  if (!stripe) stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+  return stripe;
+}
 
 const ADMIN_EMAIL = "jannatsumaiya199@gmail.com";
 
 async function createAdmin() {
-  const existingAdmin = await usersCollection.findOne({
+  const existingAdmin = await (await usersCollection()).findOne({
     email: ADMIN_EMAIL,
   });
 
   if (existingAdmin && existingAdmin.role !== "admin") {
-    await usersCollection.updateOne(
+    await (await usersCollection()).updateOne(
       { email: ADMIN_EMAIL },
       { $set: { role: "admin" } }
     );
@@ -57,7 +90,7 @@ async function createAdmin() {
 // Featured doctors (verified only, limit 6)
 app.get("/api/home/featured-doctors", async (req, res) => {
   try {
-    const doctors = await doctorsCollection
+    const doctors = await (await doctorsCollection())
       .find({ verificationStatus: "verified" })
       .limit(6)
       .toArray();
@@ -71,10 +104,10 @@ app.get("/api/home/featured-doctors", async (req, res) => {
 app.get("/api/home/stats", async (req, res) => {
   try {
     // Ensure collections are available
-    const totalDoctors = (await doctorsCollection?.countDocuments?.({ verificationStatus: "verified" })) || 0;
-    const totalPatients = (await usersCollection?.countDocuments?.({ role: "patient" })) || 0;
-    const totalAppointments = (await appointmentsCollection?.countDocuments?.()) || 0;
-    const totalReviews = (await reviewsCollection?.countDocuments?.()) || 0;
+    const totalDoctors = (await (await doctorsCollection())?.countDocuments?.({ verificationStatus: "verified" })) || 0;
+    const totalPatients = (await (await usersCollection())?.countDocuments?.({ role: "patient" })) || 0;
+    const totalAppointments = (await (await appointmentsCollection())?.countDocuments?.()) || 0;
+    const totalReviews = (await (await reviewsCollection())?.countDocuments?.()) || 0;
 
     res.send({ doctors: totalDoctors, patients: totalPatients, appointments: totalAppointments, reviews: totalReviews });
   } catch (err) {
@@ -85,10 +118,12 @@ app.get("/api/home/stats", async (req, res) => {
 // Patient testimonials (reviews with patient info)
 app.get("/api/home/testimonials", async (req, res) => {
   try {
-    const reviewsCollection = database.collection("reviews");
-    const usersCollection = database.collection("user");
-
-    const reviews = await reviewsCollection
+    console.log("DEBUG: Starting testimonials query...");
+    if (!reviewsCollection) {
+      console.log("DEBUG: reviewsCollection is undefined!");
+      return res.status(500).send({ message: "Failed", error: "reviewsCollection is undefined" });
+    }
+    const reviews = await (await reviewsCollection())
       .aggregate([
         {
           $addFields: {
@@ -119,9 +154,11 @@ app.get("/api/home/testimonials", async (req, res) => {
       ])
       .toArray();
 
+    console.log("DEBUG: Query successful, sending", reviews.length, "reviews");
     res.send(reviews);
   } catch (err) {
-    res.status(500).send({ message: "Failed" });
+    console.error("Testimonials endpoint error:", err);
+    res.status(500).send({ message: "Failed", error: err.message, errorType: err.name });
   }
 });
 
@@ -156,9 +193,9 @@ app.get("/api/doctors", async (req, res) => {
     const pageNum = parseInt(page);
     const limitNum = parseInt(limit);
 
-    const totalCount = await doctorsCollection.countDocuments(query);
+    const totalCount = await (await doctorsCollection()).countDocuments(query);
 
-    const doctors = await doctorsCollection
+    const doctors = await (await doctorsCollection())
       .find(query)
       .sort(sortQuery)
       .skip((pageNum - 1) * limitNum)
@@ -180,7 +217,7 @@ app.get("/api/doctors", async (req, res) => {
 app.get("/api/doctors/:id", async (req, res) => {
   try {
     const id = req.params.id;
-    const doctor = await doctorsCollection.findOne({ _id: new ObjectId(id) });
+    const doctor = await (await doctorsCollection()).findOne({ _id: new ObjectId(id) });
 
     if (!doctor) {
       return res.status(404).send({ message: "Doctor not found" });
@@ -201,7 +238,7 @@ app.post("/api/doctors", async (req, res) => {
       return res.status(400).send({ message: "Required fields missing" });
     }
 
-    const result = await doctorsCollection.insertOne(doctorData);
+    const result = await (await doctorsCollection()).insertOne(doctorData);
     res.status(201).send(result);
   } catch (err) {
     console.error(err);
@@ -224,7 +261,7 @@ app.post("/api/appointments", verifyToken, async (req, res) => {
       return res.status(400).send({ message: "Required fields missing" });
     }
 
-    const existing = await appointmentsCollection.findOne({
+    const existing = await (await appointmentsCollection()).findOne({
       doctorId: appointmentData.doctorId,
       appointmentDate: appointmentData.appointmentDate,
       appointmentTime: appointmentData.appointmentTime,
@@ -242,7 +279,7 @@ app.post("/api/appointments", verifyToken, async (req, res) => {
       createdAt: new Date(),
     };
 
-    const result = await appointmentsCollection.insertOne(newAppointment);
+    const result = await (await appointmentsCollection()).insertOne(newAppointment);
     res.status(201).send(result);
   } catch (err) {
     console.error(err);
@@ -254,7 +291,7 @@ app.get("/api/appointments/patient/:patientId", verifyToken, async (req, res) =>
   try {
     const { patientId } = req.params;
 
-    const appointments = await appointmentsCollection
+    const appointments = await (await appointmentsCollection())
       .aggregate([
         { $match: { patientId } },
         {
@@ -292,7 +329,7 @@ app.post("/api/payments/create-intent", verifyToken, async (req, res) => {
       return res.status(400).send({ message: "appointmentId and amount required" });
     }
 
-    const paymentIntent = await stripe.paymentIntents.create({
+    const paymentIntent = await getStripe().paymentIntents.create({
       amount: Math.round(amount * 100), // cent e convert (50$ = 5000 cents)
       currency: "usd",
       metadata: { appointmentId },
@@ -311,7 +348,7 @@ app.patch("/api/appointments/:id/payment", verifyToken, async (req, res) => {
     const { transactionId } = req.body;
     const appointmentId = req.params.id;
 
-    const result = await appointmentsCollection.updateOne(
+    const result = await (await appointmentsCollection()).updateOne(
       { _id: new ObjectId(appointmentId) },
       {
         $set: {
@@ -332,7 +369,7 @@ app.patch("/api/appointments/:id/payment", verifyToken, async (req, res) => {
 
 app.get("/api/appointments/:id", verifyToken, async (req, res) => {
   try {
-    const appointment = await appointmentsCollection
+    const appointment = await (await appointmentsCollection())
       .aggregate([
         { $match: { _id: new ObjectId(req.params.id) } },
         {
@@ -364,7 +401,7 @@ app.get("/api/appointments/:id", verifyToken, async (req, res) => {
 // Cancel appointment
 app.patch("/api/appointments/:id/cancel", verifyToken, async (req, res) => {
   try {
-    const result = await appointmentsCollection.updateOne(
+    const result = await (await appointmentsCollection()).updateOne(
       { _id: new ObjectId(req.params.id) },
       { $set: { appointmentStatus: "cancelled", updatedAt: new Date() } }
     );
@@ -383,7 +420,7 @@ app.patch("/api/appointments/:id/reschedule", verifyToken, async (req, res) => {
       return res.status(400).send({ message: "Date and time required" });
     }
 
-    const result = await appointmentsCollection.updateOne(
+    const result = await (await appointmentsCollection()).updateOne(
       { _id: new ObjectId(req.params.id) },
       {
         $set: {
@@ -405,7 +442,7 @@ app.patch("/api/appointments/:id/reschedule", verifyToken, async (req, res) => {
 app.delete("/api/users/:id", verifyToken, verifyRole("admin"), async (req, res) => {
   try {
     const usersCollection = database.collection("user");
-    const result = await usersCollection.deleteOne({ _id: new ObjectId(req.params.id) });
+    const result = await (await usersCollection()).deleteOne({ _id: new ObjectId(req.params.id) });
     res.send(result);
   } catch (err) {
     console.error(err);
@@ -416,7 +453,7 @@ app.delete("/api/users/:id", verifyToken, verifyRole("admin"), async (req, res) 
 app.patch("/api/doctors/:id/verify", verifyToken, verifyRole("admin"), async (req, res) => {
   try {
     const { status } = req.body;
-    const result = await doctorsCollection.updateOne(
+    const result = await (await doctorsCollection()).updateOne(
       { _id: new ObjectId(req.params.id) },
       { $set: { verificationStatus: status } }
     );
@@ -431,7 +468,7 @@ app.get("/api/payments/patient/:patientId", verifyToken, async (req, res) => {
   try {
     const { patientId } = req.params;
 
-    const payments = await appointmentsCollection
+    const payments = await (await appointmentsCollection())
       .aggregate([
         {
           $match: {
@@ -475,7 +512,7 @@ app.get("/api/appointments/doctor/:doctorId", verifyToken, async (req, res) => {
   try {
     const { doctorId } = req.params;
 
-    const appointments = await appointmentsCollection
+    const appointments = await (await appointmentsCollection())
       .aggregate([
         { $match: { doctorId } },
         {
@@ -518,7 +555,7 @@ app.patch("/api/appointments/:id/status", verifyToken, async (req, res) => {
       return res.status(400).send({ message: "Invalid status" });
     }
 
-    const result = await appointmentsCollection.updateOne(
+    const result = await (await appointmentsCollection()).updateOne(
       { _id: new ObjectId(req.params.id) },
       { $set: { appointmentStatus: status, updatedAt: new Date() } }
     );
@@ -532,7 +569,7 @@ app.patch("/api/appointments/:id/status", verifyToken, async (req, res) => {
 
 app.get("/api/doctors/user/:userId", verifyToken, async (req, res) => {
   try {
-    const doctor = await doctorsCollection.findOne({
+    const doctor = await (await doctorsCollection()).findOne({
       userId: req.params.userId,
     });
 
@@ -553,7 +590,7 @@ app.get("/api/doctors/user/:userId", verifyToken, async (req, res) => {
 // All users fetch
 app.get("/api/admin/users", verifyToken, verifyRole("admin"), async (req, res) => {
   try {
-    const users = await usersCollection.find({}).toArray();
+    const users = await (await usersCollection()).find({}).toArray();
     res.send(users);
   } catch (err) {
     res.status(500).send({ message: "Failed to fetch users" });
@@ -563,7 +600,7 @@ app.get("/api/admin/users", verifyToken, verifyRole("admin"), async (req, res) =
 // Delete user
 app.delete("/api/admin/users/:id", verifyToken, verifyRole("admin"), async (req, res) => {
   try {
-    const result = await usersCollection.deleteOne({
+    const result = await (await usersCollection()).deleteOne({
       _id: new ObjectId(req.params.id),
     });
     res.send(result);
@@ -576,7 +613,7 @@ app.delete("/api/admin/users/:id", verifyToken, verifyRole("admin"), async (req,
 app.patch("/api/admin/users/:id/status", verifyToken, verifyRole("admin"), async (req, res) => {
   try {
     const { status } = req.body;
-    const result = await usersCollection.updateOne(
+    const result = await (await usersCollection()).updateOne(
       { _id: new ObjectId(req.params.id) },
       { $set: { status } }
     );
@@ -591,7 +628,7 @@ app.patch("/api/admin/users/:id/status", verifyToken, verifyRole("admin"), async
 // All doctors
 app.get("/api/admin/doctors", verifyToken, verifyRole("admin"), async (req, res) => {
   try {
-    const doctors = await doctorsCollection.find({}).toArray();
+    const doctors = await (await doctorsCollection()).find({}).toArray();
     res.send(doctors);
   } catch (err) {
     res.status(500).send({ message: "Failed to fetch doctors" });
@@ -602,7 +639,7 @@ app.get("/api/admin/doctors", verifyToken, verifyRole("admin"), async (req, res)
 app.patch("/api/admin/doctors/:id/verify", verifyToken, verifyRole("admin"), async (req, res) => {
   try {
     const { verificationStatus } = req.body;
-    const result = await doctorsCollection.updateOne(
+    const result = await (await doctorsCollection()).updateOne(
       { _id: new ObjectId(req.params.id) },
       { $set: { verificationStatus } }
     );
@@ -616,20 +653,20 @@ app.patch("/api/admin/doctors/:id/verify", verifyToken, verifyRole("admin"), asy
 
 app.get("/api/admin/analytics", verifyToken, verifyRole("admin"), async (req, res) => {
   try {
-    const totalDoctors = await doctorsCollection.countDocuments();
-    const totalPatients = await usersCollection.countDocuments({ role: "patient" });
-    const totalAppointments = await appointmentsCollection.countDocuments();
-    const totalPaid = await appointmentsCollection.countDocuments({ paymentStatus: "paid" });
+    const totalDoctors = await (await doctorsCollection()).countDocuments();
+    const totalPatients = await (await usersCollection()).countDocuments({ role: "patient" });
+    const totalAppointments = await (await appointmentsCollection()).countDocuments();
+    const totalPaid = await (await appointmentsCollection()).countDocuments({ paymentStatus: "paid" });
 
     // Doctor performance (rating based)
-    const doctorPerformance = await doctorsCollection
+    const doctorPerformance = await (await doctorsCollection())
       .find({}, { projection: { doctorName: 1, rating: 1, specialization: 1 } })
       .sort({ rating: -1 })
       .limit(5)
       .toArray();
 
     // Monthly appointments
-    const monthlyData = await appointmentsCollection
+    const monthlyData = await (await appointmentsCollection())
       .aggregate([
         {
           $group: {
@@ -658,7 +695,7 @@ app.get("/api/admin/analytics", verifyToken, verifyRole("admin"), async (req, re
 // All appointments (admin)
 app.get("/api/admin/appointments", verifyToken, verifyRole("admin"), async (req, res) => {
   try {
-    const appointments = await appointmentsCollection
+    const appointments = await (await appointmentsCollection())
       .aggregate([
         {
           $addFields: {
@@ -698,7 +735,7 @@ app.get("/api/admin/appointments", verifyToken, verifyRole("admin"), async (req,
 // Get patient reviews
 app.get("/api/reviews/patient/:patientId", verifyToken, async (req, res) => {
   try {
-    const reviews = await reviewsCollection
+    const reviews = await (await reviewsCollection())
       .aggregate([
         { $match: { patientId: req.params.patientId } },
         {
@@ -733,12 +770,12 @@ app.post("/api/reviews", verifyToken, async (req, res) => {
     }
 
     // Ek doctor ke ekbar er beshi review dewa jacche kina check
-    const existing = await reviewsCollection.findOne({ patientId, doctorId });
+    const existing = await (await reviewsCollection()).findOne({ patientId, doctorId });
     if (existing) {
       return res.status(409).send({ message: "You already reviewed this doctor" });
     }
 
-    const result = await reviewsCollection.insertOne({
+    const result = await (await reviewsCollection()).insertOne({
       patientId,
       doctorId,
       rating: Number(rating),
@@ -756,7 +793,7 @@ app.post("/api/reviews", verifyToken, async (req, res) => {
 app.patch("/api/reviews/:id", verifyToken, async (req, res) => {
   try {
     const { rating, reviewText } = req.body;
-    const result = await reviewsCollection.updateOne(
+    const result = await (await reviewsCollection()).updateOne(
       { _id: new ObjectId(req.params.id) },
       {
         $set: {
@@ -775,7 +812,7 @@ app.patch("/api/reviews/:id", verifyToken, async (req, res) => {
 // Delete review
 app.delete("/api/reviews/:id", verifyToken, async (req, res) => {
   try {
-    const result = await reviewsCollection.deleteOne({
+    const result = await (await reviewsCollection()).deleteOne({
       _id: new ObjectId(req.params.id),
     });
     res.send(result);
@@ -792,7 +829,7 @@ app.patch("/api/doctors/user/:userId", verifyToken, async (req, res) => {
   try {
     const { qualifications, experience, consultationFee, availableSlots, availableDays, hospitalName, specialization } = req.body;
 
-    const result = await doctorsCollection.updateOne(
+    const result = await (await doctorsCollection()).updateOne(
       { userId: req.params.userId },
       {
         $set: {
@@ -823,7 +860,7 @@ app.get("/api/appointments/booked-slots", async (req, res) => {
       return res.status(400).send({ message: "doctorId and date required" });
     }
 
-    const bookedAppointments = await appointmentsCollection
+    const bookedAppointments = await (await appointmentsCollection())
       .find({
         doctorId,
         appointmentDate: date,
@@ -842,7 +879,7 @@ app.get("/api/appointments/booked-slots", async (req, res) => {
 // Get doctor schedule
 app.get("/api/doctors/user/:userId/schedule", verifyToken, async (req, res) => {
   try {
-    const doctor = await doctorsCollection.findOne({ userId: req.params.userId });
+    const doctor = await (await doctorsCollection()).findOne({ userId: req.params.userId });
     if (!doctor) return res.status(404).send({ message: "Doctor not found" });
 
     res.send({
@@ -859,7 +896,7 @@ app.patch("/api/doctors/user/:userId/schedule", verifyToken, async (req, res) =>
   try {
     const { availableDays, availableSlots } = req.body;
 
-    const result = await doctorsCollection.updateOne(
+    const result = await (await doctorsCollection()).updateOne(
       { userId: req.params.userId },
       {
         $set: {
@@ -879,7 +916,7 @@ app.patch("/api/doctors/user/:userId/schedule", verifyToken, async (req, res) =>
 // Get prescriptions by doctor
 app.get("/api/prescriptions/doctor/:doctorId", verifyToken, async (req, res) => {
   try {
-    const prescriptions = await prescriptionsCollection
+    const prescriptions = await (await prescriptionsCollection())
       .aggregate([
         { $match: { doctorId: req.params.doctorId } },
         {
@@ -925,7 +962,7 @@ app.post("/api/prescriptions", verifyToken, async (req, res) => {
       return res.status(400).send({ message: "Required fields missing" });
     }
 
-    const result = await prescriptionsCollection.insertOne({
+    const result = await (await prescriptionsCollection()).insertOne({
       doctorId,
       patientId,
       appointmentId,
@@ -946,7 +983,7 @@ app.patch("/api/prescriptions/:id", verifyToken, async (req, res) => {
   try {
     const { diagnosis, medications, notes } = req.body;
 
-    const result = await prescriptionsCollection.updateOne(
+    const result = await (await prescriptionsCollection()).updateOne(
       { _id: new ObjectId(req.params.id) },
       {
         $set: {
@@ -966,7 +1003,7 @@ app.patch("/api/prescriptions/:id", verifyToken, async (req, res) => {
 // Get single prescription by appointmentId
 app.get("/api/prescriptions/appointment/:appointmentId", verifyToken, async (req, res) => {
   try {
-    const prescription = await prescriptionsCollection.findOne({
+    const prescription = await (await prescriptionsCollection()).findOne({
       appointmentId: req.params.appointmentId,
     });
     res.send(prescription || null);
@@ -976,26 +1013,21 @@ app.get("/api/prescriptions/appointment/:appointmentId", verifyToken, async (req
 });
 
 
-// Initialize DB and start server
-connectDB()
-  .then(({ db }) => {
-    doctorsCollection = db.collection("doctor");
-    appointmentsCollection = db.collection("appointments");
-    usersCollection = db.collection("user");
-    reviewsCollection = db.collection("reviews");
-    prescriptionsCollection = db.collection("prescriptions");
-    stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
+// Initialize DB and start server (only when run directly, not on Vercel)
+if (require.main === module) {
+  connectDB()
+    .then(() => {
+      // Create admin if needed (call asynchronously)
+      createAdmin().catch((err) => console.error("createAdmin error:", err));
 
-    // Create admin if needed (call asynchronously)
-    createAdmin().catch((err) => console.error("createAdmin error:", err));
-
-    app.listen(port, () => {
-      console.log(`Example app listening on port ${port}`);
+      app.listen(port, () => {
+        console.log(`Example app listening on port ${port}`);
+      });
+    })
+    .catch((err) => {
+      console.error("Failed to connect to database:", err);
+      process.exit(1);
     });
-  })
-  .catch((err) => {
-    console.error("Failed to connect to database:", err);
-    process.exit(1);
-  });
+}
 
 module.exports = app;
